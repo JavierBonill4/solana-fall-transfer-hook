@@ -1,0 +1,21 @@
+{
+    "_comment": "SEALED. The starter's on-chain surface, error wiring and test count, as it ships. grade.py diffs the built IDL against this. Names are compared case-insensitively with underscores stripped, so snake_case here matches the camelCase Anchor emits.",
+    "challenge": "transfer-hook",
+    "program_dir": "solana-fall-transfer-hook",
+    "instructions": [
+      "initialize_mint",
+      "initialize",
+      "initialize_extra_account_meta_list",
+      "transfer_hook"
+    ],
+    "accounts": {
+      "rate_limit": ["authority", "max_amount", "window_start", "amount_transferred"]
+    },
+    "errors": ["CustomError", "RateLimitExceeded", "InvalidMint", "NotTransferring"],
+    "_error_uses_note": "This assignment REUSES the shipped error codes rather than adding new ones, so 'a new #[error_code] variant' would fail every correct solution. Instead we count how many places outside error.rs reference ErrorCode:: — the starter has 2, both in transfer_hook.rs, and Challenge 1 requires returning InvalidMint from initialize.",
+    "error_uses": 2,
+    "_test_count_note": "test_initialize.rs 1 + test_init_extra_account_meta.rs 1 + test_transfer_hook.rs 2 = 4. Challenge 3 asks for one new test and Challenge 4 for two, so the bar is 7.",
+    "test_count": 4,
+    "new_tests_required": 3
+  }
+  

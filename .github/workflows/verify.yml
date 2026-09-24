@@ -1,0 +1,177 @@
+# Solana School grader — Transfer Hook.
+#
+# SEALED. The submission checker compares this file's blob SHA against the
+# upstream copy. Editing it fails your submission before anything is read.
+#
+# It runs in YOUR fork, on YOUR free Actions minutes. Nothing here uploads
+# your source anywhere, and the site never executes it — it only reads the
+# result this job publishes.
+#
+# This assignment has no canonical suite and no mutant pack. grade.py checks
+# four things: it builds, your own tests are green and there are more of them
+# than the starter ships, the IDL gained surface, and a declared error is
+# returned somewhere the starter returned none.
+
+name: verify
+
+on:
+  push:
+    branches: ["**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One run per branch at a time. Not cancel-in-progress: a run already going
+# may be the one somebody is about to submit, and cancelling it makes that
+# commit ungradeable until they dispatch it again by hand.
+concurrency:
+  group: verify-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    # Grade forks, not the starter.
+    #
+    # The starter passes none of the four gates by definition, so grading it
+    # would park a permanent red X on the repository every student clones —
+    # which reads as "the starter is broken" and generates support questions
+    # that have nothing to do with anybody's code. Dispatch it by hand from
+    # the Actions tab to smoke-test the grader against upstream.
+    if: github.event.repository.fork || github.event_name == 'workflow_dispatch'
+
+    env:
+      CHALLENGE_ID: transfer-hook
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # rust-toolchain.toml pins 1.98.1, and rustup honours it over whatever
+      # this action installs. Named here so the install happens in this step,
+      # where a failure is legible, rather than midway through a build.
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@1.98.1
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install Solana toolchain
+        run: |
+          sh -c "$(curl -sSfL https://release.anza.xyz/stable/install)"
+          echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH"
+
+      # avm is deliberately NOT used.
+      #
+      # It compiles itself from source, which costs minutes to install a
+      # version manager whose only job here is to fetch one binary. And
+      # current avm verifies the downloaded binary's build provenance through
+      # the GitHub attestations API, which answers 403 to a job holding only
+      # `contents: read` — so `avm install` fails outright on a hardened
+      # workflow. Take the release binary directly and check its hash here.
+      #
+      # On any failure the fallback is `cargo install anchor-cli`: slow, but
+      # no provenance step and no avm.
+      - name: Install Anchor 1.2.0
+        env:
+          ANCHOR_URL: https://github.com/solana-foundation/anchor/releases/download/v1.2.0/anchor-1.2.0-x86_64-unknown-linux-gnu
+          ANCHOR_SHA256: 0c9c41a3292c281cc6eadb78d6e1c8224d8324a34b0736a89d640fd314db05b7
+        run: |
+          mkdir -p "$HOME/.local/bin"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          ok=0
+          if curl -sSfL --retry 3 -o /tmp/anchor "$ANCHOR_URL"; then
+            if echo "$ANCHOR_SHA256  /tmp/anchor" | sha256sum -c -; then
+              install -m 0755 /tmp/anchor "$HOME/.local/bin/anchor"
+              ok=1
+            else
+              echo "::warning::Anchor binary checksum did not match; building from source."
+            fi
+          else
+            echo "::warning::Could not download the Anchor binary; building from source."
+          fi
+          if [ "$ok" = "0" ]; then
+            cargo install anchor-cli --version 1.2.0 --locked --force
+          fi
+          anchor --version
+
+      # cargo-build-sbf downloads the Solana platform-tools toolchain on its
+      # first run — a few hundred megabytes that are identical every time.
+      - name: Cache Solana platform-tools
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/solana
+          key: solana-platform-tools-${{ runner.os }}
+
+      # -- build the learner's program --------------------------------------
+      #
+      # `anchor keys sync` first, and it is not optional.
+      #
+      # The repo declares a program id but does not ship its keypair (it is a
+      # private key — it must not be in a public repo). A fresh checkout has
+      # no target/, so `anchor build` generates a NEW random keypair and then
+      # refuses to continue because its pubkey does not match declare_id!.
+      # Every learner hits this, because it is a property of the checkout, not
+      # of their work.
+      #
+      # keys sync rewrites declare_id! and Anchor.toml to match the keypair
+      # that was just generated. Both changes are to CI's throwaway working
+      # copy — nothing is committed, so the sealed-file check is unaffected.
+      # The program id is arbitrary here anyway: LiteSVM loads the .so at
+      # whatever the program's own id() says.
+      #
+      # continue-on-error so a build failure still reaches grade.py, which
+      # writes a result.json saying the build gate failed. A red run with no
+      # artifact is a submission the site cannot read at all.
+      - name: anchor build
+        id: build
+        continue-on-error: true
+        run: |
+          anchor keys sync
+          anchor build
+
+      # No JS toolchain and no surfpool here: the suite is Rust, and the tests
+      # drive the program through LiteSVM in-process. `include_bytes!` pulls
+      # target/deploy/solana_fall_transfer_hook.so straight out of the build
+      # above, so there is nothing to deploy and no validator to start.
+      - name: Grade
+        run: python3 grader/grade.py
+
+      - name: Upload result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          # The site looks for this exact artifact name (RESULT_ARTIFACT in
+          # lib/grader-result.ts). Same across every challenge — do not rename.
+          name: solana-summer-result
+          path: result.json
+          if-no-files-found: error
+
+      - name: Summary
+        if: always()
+        run: |
+          if [ -f result.json ]; then
+            python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          r = json.load(open("result.json"))
+          g = r["gates"]
+          print("## Solana School — " + r["challenge"])
+          print()
+          print(f"**Gates met:** {g['met']}/{g['of']}")
+          print()
+          print("| gate | |")
+          print("| --- | --- |")
+          for k in ("build", "tests", "surface", "errors"):
+              print(f"| {k} | {'PASS' if g[k] else 'FAIL'} |")
+          print()
+          print(f"**Tests:** {g['passing']} passing, {g['failing']} failing "
+                f"(bar is {g['required_passing']})")
+          print()
+          if r["notes"]:
+              print("### Notes")
+              for n in r["notes"]:
+                  print(f"- {n}")
+          PY
+          fi
